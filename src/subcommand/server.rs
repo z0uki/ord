@@ -36,6 +36,10 @@ use {
   },
 };
 
+//hashmap
+use serde_json::json;
+use std::{collections::HashMap, println};
+
 mod error;
 
 enum BlockQuery {
@@ -123,6 +127,12 @@ pub(crate) struct Server {
   redirect_http_to_https: bool,
 }
 
+#[derive(Deserialize)]
+struct InscriptionsRequest {
+  from: Option<u64>,
+  size: Option<usize>,
+}
+
 impl Server {
   pub(crate) fn run(self, options: Options, index: Arc<Index>, handle: Handle) -> Result {
     Runtime::new()?.block_on(async {
@@ -155,6 +165,9 @@ impl Server {
         .route("/input/:block/:transaction/:input", get(Self::input))
         .route("/inscription/:inscription_id", get(Self::inscription))
         .route("/inscriptions", get(Self::inscriptions))
+        .route("/api/inscriptions", get(Self::api_inscriptions))
+        .route("/api/block/:query", get(Self::api_block))
+        .route("/api/count", get(Self::api_count))
         .route("/inscriptions/:from", get(Self::inscriptions_from))
         .route("/install.sh", get(Self::install_script))
         .route("/ordinal/:sat", get(Self::ordinal))
@@ -477,38 +490,6 @@ impl Server {
     Redirect::to("https://raw.githubusercontent.com/casey/ord/master/install.sh")
   }
 
-  async fn block(
-    Extension(page_config): Extension<Arc<PageConfig>>,
-    Extension(index): Extension<Arc<Index>>,
-    Path(DeserializeFromStr(query)): Path<DeserializeFromStr<BlockQuery>>,
-  ) -> ServerResult<PageHtml<BlockHtml>> {
-    let (block, height) = match query {
-      BlockQuery::Height(height) => {
-        let block = index
-          .get_block_by_height(height)?
-          .ok_or_not_found(|| format!("block {height}"))?;
-
-        (block, height)
-      }
-      BlockQuery::Hash(hash) => {
-        let info = index
-          .block_header_info(hash)?
-          .ok_or_not_found(|| format!("block {hash}"))?;
-
-        let block = index
-          .get_block_by_hash(hash)?
-          .ok_or_not_found(|| format!("block {hash}"))?;
-
-        (block, info.height as u64)
-      }
-    };
-
-    Ok(
-      BlockHtml::new(block, Height(height), Self::index_height(&index)?)
-        .page(page_config, index.has_sat_index()?),
-    )
-  }
-
   async fn transaction(
     Extension(page_config): Extension<Arc<PageConfig>>,
     Extension(index): Extension<Arc<Index>>,
@@ -810,6 +791,245 @@ impl Server {
       Media::Unknown => Ok(PreviewUnknownHtml.into_response()),
       Media::Video => Ok(PreviewVideoHtml { inscription_id }.into_response()),
     }
+  }
+
+  async fn block(
+    Extension(page_config): Extension<Arc<PageConfig>>,
+    Extension(index): Extension<Arc<Index>>,
+    Path(DeserializeFromStr(query)): Path<DeserializeFromStr<BlockQuery>>,
+  ) -> ServerResult<PageHtml<BlockHtml>> {
+    let (block, height) = match query {
+      BlockQuery::Height(height) => {
+        let block = index
+          .get_block_by_height(height)?
+          .ok_or_not_found(|| format!("block {height}"))?;
+
+        (block, height)
+      }
+      BlockQuery::Hash(hash) => {
+        let info = index
+          .block_header_info(hash)?
+          .ok_or_not_found(|| format!("block {hash}"))?;
+
+        let block = index
+          .get_block_by_hash(hash)?
+          .ok_or_not_found(|| format!("block {hash}"))?;
+
+        (block, info.height as u64)
+      }
+    };
+
+    Ok(
+      BlockHtml::new(block, Height(height), Self::index_height(&index)?)
+        .page(page_config, index.has_sat_index()?),
+    )
+  }
+
+  async fn api_block(
+    Extension(page_config): Extension<Arc<PageConfig>>,
+    Extension(index): Extension<Arc<Index>>,
+    Path(DeserializeFromStr(query)): Path<DeserializeFromStr<BlockQuery>>,
+  ) -> ServerResult<Response> {
+    let (block, _) = match query {
+      BlockQuery::Height(height) => {
+        let block = index
+          .get_block_by_height(height)?
+          .ok_or_not_found(|| format!("block {height}"))?;
+
+        (block, height)
+      }
+      BlockQuery::Hash(hash) => {
+        let info = index
+          .block_header_info(hash)?
+          .ok_or_not_found(|| format!("block {hash}"))?;
+
+        let block = index
+          .get_block_by_hash(hash)?
+          .ok_or_not_found(|| format!("block {hash}"))?;
+
+        (block, info.height as u64)
+      }
+    };
+
+    let mut inscriptions_json = Vec::new();
+    for (inscription_number, inscription_id) in
+      index.get_feed_inscriptions(block.txdata.len()).unwrap()
+    {
+      let satpoint = index
+        .get_inscription_satpoint_by_id(inscription_id)?
+        .ok_or_not_found(|| format!("inscription {inscription_id}"))?;
+
+      let tx = index
+        .get_transaction(satpoint.outpoint.txid)?
+        .ok_or_not_found(|| format!("inscription {inscription_id} current transaction"))?;
+
+      //判断tx是否在block的txdata中
+      if !block.txdata.contains(&tx) {
+        continue;
+      }
+
+      let entry = index
+        .get_inscription_entry(inscription_id)?
+        .ok_or_not_found(|| format!("inscription {inscription_id}"))?;
+
+      let inscription = index
+        .get_inscription_by_id(inscription_id)?
+        .ok_or_not_found(|| format!("inscription {inscription_id}"))?;
+
+      let output = index
+        .get_transaction(satpoint.outpoint.txid)?
+        .ok_or_not_found(|| format!("inscription {inscription_id} current transaction"))?
+        .output
+        .into_iter()
+        .nth(satpoint.outpoint.vout.try_into().unwrap())
+        .ok_or_not_found(|| format!("inscription {inscription_id} current transaction output"))?;
+
+      let chain = page_config.chain;
+
+      let address = chain
+        .address_from_script(&output.script_pubkey)
+        .unwrap()
+        .to_string();
+
+      let inscription_json = json!({
+      "address": address,
+      "content_type": inscription.content_type(),
+      "genesis_fee": entry.fee,
+      "genesis_height": entry.height,
+      "genesis_transaction": inscription_id.txid.to_string(),
+      "id": inscription_id.to_string(),
+      "inscription_number": inscription_number,
+      "location": satpoint,
+      "offset": satpoint.offset,
+      "output": satpoint.outpoint,
+      "output_value": output.value,
+      "sat": entry.sat,
+      "timestamp": timestamp(entry.timestamp).to_string(),
+      });
+
+      inscriptions_json.push(inscription_json);
+    }
+
+    Ok(
+      (
+        [
+          (header::CONTENT_TYPE, "application/json"),
+          (
+            header::CONTENT_SECURITY_POLICY,
+            "default-src 'unsafe-inline'",
+          ),
+        ],
+        serde_json::to_string(&inscriptions_json).unwrap(),
+      )
+        .into_response(),
+    )
+  }
+
+  async fn api_inscriptions(
+    Extension(page_config): Extension<Arc<PageConfig>>,
+    Extension(index): Extension<Arc<Index>>,
+    Query(args): Query<InscriptionsRequest>,
+  ) -> ServerResult<Response> {
+    //size
+    if args.size.unwrap() > 5000 {
+      return Err(ServerError::BadRequest(
+        "size must be less than or equal to 5000".to_string(),
+      ));
+    }
+
+    let inscriptions = index.get_range_inscriptions(args.size.unwrap_or(100), args.from)?;
+
+    //构造返回的数据 json 格式
+    let mut inscriptions_json = Vec::new();
+
+    for inscription_id in inscriptions {
+      let entry = index
+        .get_inscription_entry(inscription_id)?
+        .ok_or_not_found(|| format!("inscription {inscription_id}"))?;
+
+      let inscription = index
+        .get_inscription_by_id(inscription_id)?
+        .ok_or_not_found(|| format!("inscription {inscription_id}"))?;
+
+      let satpoint = index
+        .get_inscription_satpoint_by_id(inscription_id)?
+        .ok_or_not_found(|| format!("inscription {inscription_id}"))?;
+
+      let output = index
+        .get_transaction(satpoint.outpoint.txid)?
+        .ok_or_not_found(|| format!("inscription {inscription_id} current transaction"))?
+        .output
+        .into_iter()
+        .nth(satpoint.outpoint.vout.try_into().unwrap())
+        .ok_or_not_found(|| format!("inscription {inscription_id} current transaction output"))?;
+
+      let chain = page_config.chain;
+
+      let address = chain
+        .address_from_script(&output.script_pubkey)
+        .unwrap_or(
+          Address::from_str("bc1p8cztsn2w98fuphetffw4fdf4zya8cjkfxnca4dcj2hv0d8mj5fhsy39c8t")
+            .unwrap(),
+        )
+        .to_string();
+
+      let inscription_json = json!({
+      "address": address,
+      "content_type": inscription.content_type(),
+      "content_body": hex::encode(inscription.body().unwrap()),
+      "genesis_fee": entry.fee,
+      "genesis_height": entry.height,
+      "genesis_transaction": inscription_id.txid.to_string(),
+      "id": inscription_id.to_string(),
+      "inscription_number": entry.number,
+      "location": satpoint,
+      "offset": satpoint.offset,
+      "output": satpoint.outpoint,
+      "output_value": output.value,
+      "sat": entry.sat,
+      "timestamp": entry.timestamp,
+      });
+
+      inscriptions_json.push(inscription_json);
+    }
+
+    Ok(
+      (
+        [
+          (header::CONTENT_TYPE, "application/json"),
+          (
+            header::CONTENT_SECURITY_POLICY,
+            "default-src 'unsafe-inline'",
+          ),
+        ],
+        serde_json::to_string(&inscriptions_json).unwrap(),
+      )
+        .into_response(),
+    )
+  }
+
+  async fn api_count(Extension(index): Extension<Arc<Index>>) -> ServerResult<Response> {
+    let inscription_count = index.inscription_count()? - 1;
+    let block_count = index.block_count()? - 1;
+
+    let resp = json!({
+      "inscription_count": inscription_count.to_string(),
+      "block_count": block_count.to_string(),
+    });
+
+    Ok(
+      (
+        [
+          (header::CONTENT_TYPE, "application/json"),
+          (
+            header::CONTENT_SECURITY_POLICY,
+            "default-src 'unsafe-inline'",
+          ),
+        ],
+        serde_json::to_string(&resp).unwrap(),
+      )
+        .into_response(),
+    )
   }
 
   async fn inscription(

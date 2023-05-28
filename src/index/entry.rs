@@ -22,6 +22,7 @@ impl Entry for BlockHash {
   }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct InscriptionEntry {
   pub(crate) fee: u64,
   pub(crate) height: u64,

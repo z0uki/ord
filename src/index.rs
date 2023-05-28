@@ -1,3 +1,5 @@
+use std::println;
+
 use {
   self::{
     entry::{
@@ -544,6 +546,37 @@ impl Index {
     )
   }
 
+  pub(crate) fn check_inscription_by_id(&self, inscription_id: InscriptionId) -> Result<bool> {
+    if self
+      .database
+      .begin_read()?
+      .open_table(INSCRIPTION_ID_TO_SATPOINT)?
+      .get(&inscription_id.store())?
+      .is_none()
+    {
+      return Ok(false);
+    }
+    Ok(true)
+  }
+
+  pub(crate) fn get_inscription_by_id_and_tx(
+    &self,
+    inscription_id: InscriptionId,
+    tx: &Transaction,
+  ) -> Result<Option<Inscription>> {
+    if self
+      .database
+      .begin_read()?
+      .open_table(INSCRIPTION_ID_TO_SATPOINT)?
+      .get(&inscription_id.store())?
+      .is_none()
+    {
+      return Ok(None);
+    }
+
+    Ok(Inscription::from_transaction(&tx))
+  }
+
   pub(crate) fn get_inscriptions_on_output(
     &self,
     outpoint: OutPoint,
@@ -766,6 +799,44 @@ impl Index {
       .collect();
 
     Ok((inscriptions, prev, next))
+  }
+
+  pub(crate) fn get_range_inscriptions(
+    &self,
+    n: usize,
+    from: Option<u64>,
+  ) -> Result<Vec<InscriptionId>> {
+    let rtx = self.database.begin_read()?;
+
+    let inscription_number_to_inscription_id =
+      rtx.open_table(INSCRIPTION_NUMBER_TO_INSCRIPTION_ID)?;
+
+    let latest = match inscription_number_to_inscription_id.iter()?.rev().next() {
+      Some((number, _id)) => number.value(),
+      None => return Ok(Default::default()),
+    };
+
+    let from = from.unwrap_or(latest);
+
+    let inscriptions = inscription_number_to_inscription_id
+      .range(from..)?
+      .take(n)
+      .map(|(_number, id)| Entry::load(*id.value()))
+      .collect();
+
+    Ok(inscriptions)
+  }
+
+  pub(crate) fn inscription_count(&self) -> Result<u64> {
+    Ok(
+      self
+        .database
+        .begin_read()?
+        .open_table(INSCRIPTION_NUMBER_TO_INSCRIPTION_ID)?
+        .iter()?
+        .count()
+        .try_into()?,
+    )
   }
 
   pub(crate) fn get_feed_inscriptions(&self, n: usize) -> Result<Vec<(u64, InscriptionId)>> {
@@ -1014,6 +1085,13 @@ mod tests {
     }
   }
 
+  // #[test]
+  // fn get_inscription_by_id() {
+  //   let context = Context::builder().build();
+  //   let inscription_id
+  //   context.index.get_inscription_by_id(inscription_id).unwrap()
+  // }
+
   #[test]
   fn inscriptions_below_first_inscription_height_are_skipped() {
     let inscription = inscription("text/plain;charset=utf-8", "hello");
@@ -1029,7 +1107,6 @@ mod tests {
       let txid = context.rpc_server.broadcast_tx(template.clone());
       let inscription_id = InscriptionId::from(txid);
       context.mine_blocks(1);
-
       assert_eq!(
         context.index.get_inscription_by_id(inscription_id).unwrap(),
         Some(inscription)
@@ -2112,6 +2189,13 @@ mod tests {
         50 * COIN_VALUE,
       );
 
+      let txid =
+        Txid::from_str("0a0cdbbbb011fac59fc85dc98eea7746a30a89772df366cd8695a322e946abae").unwrap();
+      println!("{:?}", txid);
+      println!(
+        "{:?}",
+        context.index.get_inscription_entry(txid.into()).unwrap()
+      );
       assert!(context
         .index
         .get_inscription_entry(second.into())
