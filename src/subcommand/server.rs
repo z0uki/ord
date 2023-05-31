@@ -938,7 +938,6 @@ impl Server {
     }
 
     let inscriptions = index.get_range_inscriptions(args.size.unwrap_or(100), args.from)?;
-    println!("{:?}", inscriptions);
     //构造返回的数据 json 格式
     let mut inscriptions_json = Vec::new();
 
@@ -946,15 +945,15 @@ impl Server {
       let entry = index
         .get_inscription_entry(inscription_id)?
         .ok_or_not_found(|| format!("inscription {inscription_id}"))?;
-      println!("{:?}", entry);
+
       let inscription = index
         .get_inscription_by_id(inscription_id)?
         .ok_or_not_found(|| format!("inscription {inscription_id}"))?;
-      println!("{:?}", inscription);
+
       let satpoint = index
         .get_inscription_satpoint_by_id(inscription_id)?
         .ok_or_not_found(|| format!("inscription {inscription_id}"))?;
-      println!("{:?}", satpoint);
+
       let output = index
         .get_transaction(satpoint.outpoint.txid)?
         .ok_or_not_found(|| format!("inscription {inscription_id} current transaction"))?
@@ -962,7 +961,7 @@ impl Server {
         .into_iter()
         .nth(satpoint.outpoint.vout.try_into().unwrap())
         .ok_or_not_found(|| format!("inscription {inscription_id} current transaction output"))?;
-      println!("{:?}", output);
+
       let chain = page_config.chain;
 
       let address = chain
@@ -972,7 +971,7 @@ impl Server {
             .unwrap(),
         )
         .to_string();
-      println!("{:?}", address);
+
       let inscription_json = json!({
       "address": address,
       "content_type": inscription.content_type(),
