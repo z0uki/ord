@@ -992,7 +992,7 @@ impl Server {
 
       inscriptions_json.push(inscription_json);
     }
-
+    println!("{:?}", inscriptions_json);
     Ok(
       (
         [
