@@ -1008,7 +1008,7 @@ impl Server {
   }
 
   async fn api_count(Extension(index): Extension<Arc<Index>>) -> ServerResult<Response> {
-    let inscription_count = index.inscription_count()? - 1;
+    let inscription_count = index.inscription_count()?;
     let block_count = index.block_count()? - 1;
 
     let resp = json!({

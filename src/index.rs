@@ -829,15 +829,17 @@ impl Index {
   }
 
   pub(crate) fn inscription_count(&self) -> Result<u64> {
-    Ok(
-      self
-        .database
-        .begin_read()?
-        .open_table(INSCRIPTION_NUMBER_TO_INSCRIPTION_ID)?
-        .iter()?
-        .count()
-        .try_into()?,
-    )
+    let v: Vec<(u64, InscriptionId)> = self
+      .database
+      .begin_read()?
+      .open_table(INSCRIPTION_NUMBER_TO_INSCRIPTION_ID)?
+      .iter()?
+      .rev()
+      .take(1)
+      .map(|(number, id)| (number.value(), Entry::load(*id.value())))
+      .collect();
+
+    Ok(v[0].0)
   }
 
   pub(crate) fn get_feed_inscriptions(&self, n: usize) -> Result<Vec<(u64, InscriptionId)>> {
